@@ -235,6 +235,13 @@
     flex: 1;
     max-width: 300px;
   }
+  .mic-active {
+    margin-top: 6px;
+    font-size: 12px;
+    color: var(--text-muted);
+    text-align: center;
+    min-height: 1em;
+  }
   .controls { display: flex; justify-content: center; gap: 12px; margin-top: 14px; }
   button.primary {
     font: inherit;
@@ -351,6 +358,7 @@
         <option value="">System default</option>
       </select>
     </div>
+    <div class="mic-active" id="micActive"></div>
 
     <div class="controls">
       <button class="primary" id="toggleBtn">Start measuring</button>
@@ -442,7 +450,7 @@
     label: $('statusLabel'), desc: $('statusDesc'),
     min: $('statMin'), avg: $('statAvg'), max: $('statMax'),
     peakHold: $('peakHold'), resetPeak: $('resetPeak'), clipBanner: $('clipBanner'),
-    btn: $('toggleBtn'), err: $('errorMsg'), micSelect: $('micSelect'),
+    btn: $('toggleBtn'), err: $('errorMsg'), micSelect: $('micSelect'), micActive: $('micActive'),
     arc: $('arc'), track: $('track'), ticks: $('ticks'),
     canvas: $('history'), calib: $('calib'), calibVal: $('calibVal'),
   };
@@ -489,6 +497,7 @@
   // per-sample accumulator fed by the audio thread
   let pend = { sum: 0, n: 0, peak: 0, clip: 0 };
   let peakHoldAmp = 0;   // linear 0..1, so calibration changes re-map the display
+  let maxAmpSeen = 0;    // never reset by the Reset button — used for silence detection
   let clipped = false;
   const history = [];    // { t, db }
   const HISTORY_SECS = 60;
@@ -641,6 +650,23 @@
     }
     // permission granted: device labels are readable now
     refreshDevices();
+
+    const track = stream.getAudioTracks()[0];
+    // Safari can deliver pure silence when the context rate doesn't match an
+    // external mic's native rate — rebuild the context to match if needed.
+    const trackRate = track && track.getSettings && track.getSettings().sampleRate;
+    if (trackRate && audioCtx.sampleRate !== trackRate) {
+      try {
+        const matched = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: trackRate });
+        audioCtx.close();
+        audioCtx = matched;
+        if (audioCtx.state === 'suspended') audioCtx.resume();
+      } catch (e) { /* keep the original context */ }
+    }
+    // show which mic the browser ACTUALLY gave us (it can substitute silently,
+    // especially on iOS where input selection is limited)
+    els.micActive.textContent = track && track.label ? 'Using: ' + track.label : '';
+
     const src = audioCtx.createMediaStreamSource(stream);
     await attachMeter(src);
     if (audioCtx.state !== 'running') {
@@ -652,6 +678,7 @@
     energySum = 0; energyCount = 0;
     pend = { sum: 0, n: 0, peak: 0, clip: 0 };
     peakHoldAmp = 0;
+    maxAmpSeen = 0;
     clipped = false;
     els.clipBanner.classList.remove('show');
     history.length = 0;
@@ -663,13 +690,23 @@
     sampleTimer = setInterval(sample, SAMPLE_MS);
     requestAnimationFrame(render);
 
-    // if the mic is "connected" but silent, say so instead of showing a dash forever
+    // diagnose the "connected but nothing happens" cases instead of showing a dash forever
     watchdog = setTimeout(() => {
-      if (running && smoothed === null) {
+      if (!running) return;
+      if (smoothed === null) {
+        // audio engine produced no samples at all
         try { audioCtx.resume(); } catch (e) {}
         els.err.textContent = 'Microphone connected, but no audio is arriving. ' +
           'Check mic permission for this site (iPhone: Settings → Safari → Microphone), ' +
           'make sure no other app is using the mic, then press Stop and Start again.';
+        els.err.style.display = 'block';
+      } else if (maxAmpSeen < 1e-6) {
+        // samples arriving, but every one of them is zero: the device is
+        // delivering digital silence
+        els.err.textContent = 'This microphone is connected but delivering pure silence. ' +
+          'If it\'s a wireless mic: make sure the transmitter (the clip-on piece) is switched on, ' +
+          'charged, paired to the receiver, and not muted. Also check the "Using:" line above — ' +
+          'your browser may have picked a different device than you selected.';
         els.err.style.display = 'block';
       }
     }, 2500);
@@ -682,6 +719,7 @@
     if (stream) stream.getTracks().forEach(t => t.stop());
     if (audioCtx) audioCtx.close();
     stream = audioCtx = null;
+    els.micActive.textContent = '';
     els.btn.textContent = 'Start measuring';
     els.btn.classList.remove('stop');
   }
@@ -699,13 +737,14 @@
     const rms = Math.sqrt(d.sum / d.n);
     const raw = Math.min(DB_MAX, Math.max(DB_MIN, 20 * Math.log10(rms + 1e-12) + calibOffset));
     // fast attack, slower release
-    if (smoothed === null) {
-      smoothed = raw;
-      // audio is flowing — the "no audio arriving" watchdog is moot
-      clearTimeout(watchdog);
+    if (smoothed === null) smoothed = raw;
+    else smoothed += (raw - smoothed) * (raw > smoothed ? 0.6 : 0.25);
+
+    if (d.peak > maxAmpSeen) maxAmpSeen = d.peak;
+    // real signal is flowing — clear any "no audio / silence" diagnostic
+    if (d.peak > 1e-5 && els.err.style.display === 'block') {
       els.err.style.display = 'none';
     }
-    else smoothed += (raw - smoothed) * (raw > smoothed ? 0.6 : 0.25);
 
     sessionMin = Math.min(sessionMin, smoothed);
     sessionMax = Math.max(sessionMax, smoothed);
