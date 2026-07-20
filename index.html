@@ -358,6 +358,13 @@
         <option value="">System default</option>
       </select>
     </div>
+    <div class="mic-row">
+      <label for="procSelect">Processing</label>
+      <select id="procSelect">
+        <option value="raw">Raw — best for measuring</option>
+        <option value="std">Standard — try if an external mic won't connect</option>
+      </select>
+    </div>
     <div class="mic-active" id="micActive"></div>
 
     <div class="controls">
@@ -451,6 +458,7 @@
     min: $('statMin'), avg: $('statAvg'), max: $('statMax'),
     peakHold: $('peakHold'), resetPeak: $('resetPeak'), clipBanner: $('clipBanner'),
     btn: $('toggleBtn'), err: $('errorMsg'), micSelect: $('micSelect'), micActive: $('micActive'),
+    procSelect: $('procSelect'),
     arc: $('arc'), track: $('track'), ticks: $('ticks'),
     canvas: $('history'), calib: $('calib'), calibVal: $('calibVal'),
   };
@@ -550,6 +558,13 @@
     }
   });
 
+  els.procSelect.addEventListener('change', async () => {
+    if (running) {           // re-request the mic with the new processing mode
+      stop();
+      await start();
+    }
+  });
+
   if (navigator.mediaDevices && navigator.mediaDevices.addEventListener) {
     navigator.mediaDevices.addEventListener('devicechange', refreshDevices);
   }
@@ -630,7 +645,12 @@
     // the meter stuck at "–" on iPhones.
     audioCtx = new (window.AudioContext || window.webkitAudioContext)();
     if (audioCtx.state === 'suspended') audioCtx.resume();
-    const audio = { echoCancellation: false, noiseSuppression: false, autoGainControl: false };
+    // Raw disables echo cancellation / noise suppression / auto-gain for honest
+    // levels. Standard leaves browser defaults on — some iOS versions only route
+    // external mics to pages that accept processed audio.
+    const audio = els.procSelect.value === 'std'
+      ? {}
+      : { echoCancellation: false, noiseSuppression: false, autoGainControl: false };
     if (selectedDeviceId) audio.deviceId = { exact: selectedDeviceId };
     try {
       if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
