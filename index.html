@@ -1,0 +1,803 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="description" content="Free browser decibel meter — live sound levels from your microphone with true peak hold, mic-overload detection, a 60-second history chart, and hearing-safety guidance.">
+<title>Decibel Meter</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🔊</text></svg>">
+<style>
+  :root {
+    color-scheme: light;
+    --page:           #f9f9f7;
+    --surface-1:      #fcfcfb;
+    --text-primary:   #0b0b0b;
+    --text-secondary: #52514e;
+    --text-muted:     #898781;
+    --grid:           #e1e0d9;
+    --baseline:       #c3c2b7;
+    --border:         rgba(11,11,11,0.10);
+    --series-1:       #2a78d6;
+    --good:           #0ca30c;
+    --warning:        #fab219;
+    --serious:        #ec835a;
+    --critical:       #d03b3b;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      color-scheme: dark;
+      --page:           #0d0d0d;
+      --surface-1:      #1a1a19;
+      --text-primary:   #ffffff;
+      --text-secondary: #c3c2b7;
+      --text-muted:     #898781;
+      --grid:           #2c2c2a;
+      --baseline:       #383835;
+      --border:         rgba(255,255,255,0.10);
+      --series-1:       #3987e5;
+    }
+  }
+  :root[data-theme="dark"] {
+    color-scheme: dark;
+    --page:           #0d0d0d;
+    --surface-1:      #1a1a19;
+    --text-primary:   #ffffff;
+    --text-secondary: #c3c2b7;
+    --text-muted:     #898781;
+    --grid:           #2c2c2a;
+    --baseline:       #383835;
+    --border:         rgba(255,255,255,0.10);
+    --series-1:       #3987e5;
+  }
+
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+
+  body {
+    font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+    background: var(--page);
+    color: var(--text-primary);
+    min-height: 100vh;
+    display: flex;
+    justify-content: center;
+    padding: 24px 16px 48px;
+  }
+
+  .app { width: 100%; max-width: 560px; }
+
+  header { text-align: center; margin-bottom: 20px; }
+  header h1 { font-size: 20px; font-weight: 650; letter-spacing: -0.01em; }
+  header p  { font-size: 13px; color: var(--text-muted); margin-top: 4px; }
+
+  .card {
+    background: var(--surface-1);
+    border: 1px solid var(--border);
+    border-radius: 16px;
+    padding: 24px;
+    margin-bottom: 16px;
+  }
+  .card h2 {
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--text-secondary);
+    margin-bottom: 12px;
+  }
+
+  /* ---------- Gauge ---------- */
+  .gauge-wrap { display: flex; flex-direction: column; align-items: center; }
+  .gauge-box { position: relative; width: 100%; max-width: 380px; }
+  .gauge { width: 100%; display: block; }
+
+  .hero {
+    position: absolute;
+    left: 0; right: 0;
+    top: 63%;
+    transform: translateY(-50%);
+    text-align: center;
+    pointer-events: none;
+  }
+  .hero .value {
+    font-size: 64px;
+    font-weight: 700;
+    letter-spacing: -0.02em;
+    font-variant-numeric: tabular-nums;
+    line-height: 1;
+  }
+  .hero .unit {
+    font-size: 15px;
+    color: var(--text-muted);
+    margin-top: 4px;
+  }
+
+  .status-chip[hidden] { display: none; }
+  .status-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    margin-top: -34px;
+    padding: 6px 14px;
+    border-radius: 999px;
+    border: 1px solid var(--border);
+    font-size: 14px;
+    font-weight: 600;
+  }
+  .status-chip .dot-icon { display: inline-flex; }
+  .status-desc {
+    margin-top: 8px;
+    font-size: 13px;
+    color: var(--text-secondary);
+    text-align: center;
+    min-height: 1.2em;
+  }
+
+  /* ---------- Stats row ---------- */
+  .stats {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 12px;
+    margin-top: 22px;
+    width: 100%;
+  }
+  .stat {
+    text-align: center;
+    padding: 12px 8px;
+    border: 1px solid var(--border);
+    border-radius: 12px;
+  }
+  .stat .label {
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    color: var(--text-muted);
+    margin-bottom: 4px;
+  }
+  .stat .num {
+    font-size: 24px;
+    font-weight: 650;
+    font-variant-numeric: tabular-nums;
+  }
+  .stat .num small { font-size: 12px; font-weight: 500; color: var(--text-muted); }
+
+  /* ---------- Peak hold strip ---------- */
+  .peak-strip {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px 16px;
+    margin-top: 12px;
+    padding: 12px 16px;
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    width: 100%;
+  }
+  .peak-strip .pk-text .label {
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    color: var(--text-muted);
+  }
+  .peak-strip .pk-text .hint { font-size: 11px; color: var(--text-muted); margin-top: 2px; }
+  .peak-strip .pk-value {
+    font-size: 28px;
+    font-weight: 650;
+    font-variant-numeric: tabular-nums;
+    margin-left: auto;
+  }
+  .peak-strip .pk-value small { font-size: 12px; font-weight: 500; color: var(--text-muted); }
+  .peak-strip button {
+    font: inherit;
+    font-size: 12px;
+    font-weight: 600;
+    padding: 6px 14px;
+    border-radius: 999px;
+    border: 1px solid var(--baseline);
+    background: transparent;
+    color: var(--text-primary);
+    cursor: pointer;
+  }
+
+  .clip-banner {
+    display: none;
+    margin-top: 12px;
+    width: 100%;
+    padding: 10px 14px;
+    border-radius: 10px;
+    font-size: 13px;
+    font-weight: 600;
+    color: #fff;
+    background: var(--critical);
+    text-align: center;
+  }
+  .clip-banner.show { display: block; }
+
+  /* ---------- History chart ---------- */
+  #history { width: 100%; height: 140px; display: block; }
+
+  /* ---------- Controls ---------- */
+  .mic-row {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 10px;
+    margin-top: 20px;
+    width: 100%;
+    font-size: 13px;
+    color: var(--text-secondary);
+  }
+  .mic-row select {
+    font: inherit;
+    font-size: 13px;
+    padding: 8px 12px;
+    border-radius: 10px;
+    border: 1px solid var(--baseline);
+    background: var(--surface-1);
+    color: var(--text-primary);
+    flex: 1;
+    max-width: 300px;
+  }
+  .controls { display: flex; justify-content: center; gap: 12px; margin-top: 14px; }
+  button.primary {
+    font: inherit;
+    font-size: 15px;
+    font-weight: 600;
+    padding: 12px 32px;
+    border-radius: 999px;
+    border: none;
+    background: var(--series-1);
+    color: #fff;
+    cursor: pointer;
+  }
+  button.primary:hover { filter: brightness(1.08); }
+  button.primary.stop { background: transparent; color: var(--text-primary); border: 1px solid var(--baseline); }
+
+  .error {
+    margin-top: 14px;
+    font-size: 13px;
+    color: var(--critical);
+    text-align: center;
+    display: none;
+  }
+
+  /* ---------- Reference levels ---------- */
+  .levels { list-style: none; font-size: 13px; color: var(--text-secondary); }
+  .levels li {
+    display: flex;
+    justify-content: space-between;
+    padding: 7px 2px;
+    border-bottom: 1px solid var(--grid);
+  }
+  .levels li:last-child { border-bottom: none; }
+  .levels .db { font-variant-numeric: tabular-nums; color: var(--text-muted); }
+
+  /* ---------- Gunfire guide ---------- */
+  .guide p {
+    font-size: 13px;
+    color: var(--text-secondary);
+    line-height: 1.55;
+    margin-bottom: 10px;
+  }
+  .guide p:last-child { margin-bottom: 0; }
+  .guide strong { color: var(--text-primary); }
+  .guide a { color: var(--series-1); font-weight: 600; text-decoration: none; }
+  .guide a:hover { text-decoration: underline; }
+  .guide ul { list-style: none; margin: 0 0 10px; }
+  .guide li {
+    font-size: 13px;
+    color: var(--text-secondary);
+    line-height: 1.55;
+    padding: 7px 2px;
+    border-bottom: 1px solid var(--grid);
+  }
+  .guide li:last-child { border-bottom: none; }
+
+  /* ---------- Calibration ---------- */
+  .calib { display: flex; align-items: center; gap: 12px; font-size: 13px; color: var(--text-secondary); }
+  .calib input[type=range] { flex: 1; accent-color: var(--series-1); }
+  .calib .val { font-variant-numeric: tabular-nums; min-width: 52px; text-align: right; }
+  .calib-note { font-size: 12px; color: var(--text-muted); margin-top: 10px; line-height: 1.5; }
+</style>
+</head>
+<body>
+<div class="app">
+  <header>
+    <h1>Decibel Meter</h1>
+    <p>Live sound level from your microphone</p>
+  </header>
+
+  <div class="card gauge-wrap">
+    <div class="gauge-box">
+      <svg class="gauge" viewBox="0 0 380 275" aria-label="Sound level gauge">
+        <!-- track -->
+        <path id="track" fill="none" stroke="var(--grid)" stroke-width="14" stroke-linecap="round"/>
+        <!-- live arc -->
+        <path id="arc" fill="none" stroke="var(--good)" stroke-width="14" stroke-linecap="round"/>
+        <g id="ticks" fill="var(--text-muted)" font-size="12" font-family="system-ui, sans-serif"></g>
+      </svg>
+
+      <div class="hero">
+        <div class="value" id="dbValue">–</div>
+        <div class="unit">dB (approx. SPL)</div>
+      </div>
+    </div>
+
+    <div class="status-chip" id="statusChip" hidden>
+      <span class="dot-icon" id="statusIcon"></span>
+      <span id="statusLabel"></span>
+    </div>
+    <div class="status-desc" id="statusDesc"></div>
+
+    <div class="stats">
+      <div class="stat"><div class="label">Min</div><div class="num" id="statMin">–<small> dB</small></div></div>
+      <div class="stat"><div class="label">Average</div><div class="num" id="statAvg">–<small> dB</small></div></div>
+      <div class="stat"><div class="label">Max</div><div class="num" id="statMax">–<small> dB</small></div></div>
+    </div>
+
+    <div class="peak-strip">
+      <div class="pk-text">
+        <div class="label">Impulse peak (held)</div>
+        <div class="hint">True per-sample peak — catches claps, bangs, shots</div>
+      </div>
+      <div class="pk-value" id="peakHold">–<small> dB</small></div>
+      <button id="resetPeak" type="button">Reset</button>
+    </div>
+
+    <div class="clip-banner" id="clipBanner">
+      ⚠ Microphone overloaded — the real peak was LOUDER than shown. Reading not valid.
+    </div>
+
+    <div class="mic-row">
+      <label for="micSelect">Microphone</label>
+      <select id="micSelect">
+        <option value="">System default</option>
+      </select>
+    </div>
+
+    <div class="controls">
+      <button class="primary" id="toggleBtn">Start measuring</button>
+    </div>
+    <div class="error" id="errorMsg"></div>
+  </div>
+
+  <div class="card chart-card">
+    <h2>Last 60 seconds</h2>
+    <canvas id="history" aria-label="Sound level over the last 60 seconds"></canvas>
+  </div>
+
+  <div class="card guide">
+    <h2>Measuring gunfire or suppressors? Read this first</h2>
+    <p>
+      <strong>This meter cannot rate suppressors — no phone or laptop app can.</strong>
+      Consumer microphones overload around 110–120&nbsp;dB, and gunshot impulses last
+      under a millisecond. Suppressed gunfire still peaks around 130–145&nbsp;dB, so a
+      mic-based meter will under-read it. When your mic overloads, this app shows a red
+      warning instead of pretending the number is real.
+    </p>
+    <p><strong>Where regular consumers can get real numbers:</strong></p>
+    <ul>
+      <li><a href="https://pewscience.com/rankings" target="_blank" rel="noopener">PEW Science rankings</a>
+        — free independent lab data for specific suppressor + firearm + ammo combinations.
+        The most trustworthy option, and it costs nothing.</li>
+      <li><strong>Rent a firearm-rated meter</strong> for a test weekend — Larson Davis QPR
+        kits from <a href="https://www.modalshop.com/rental/products/environmental-monitoring/sound-level-meters/lxt-sound-meter/firearm-noise" target="_blank" rel="noopener">The Modal Shop</a>
+        or <a href="https://www.atecorp.com/products/larson-davis/lxt1-qpr" target="_blank" rel="noopener">ATE Corp</a>.
+        Split the cost with your club.</li>
+      <li><strong>Buy impulse-capable gear</strong> — a used B&amp;K 2209 setup (≈$2,000, the
+        hobbyist standard) for real readings, or a Cirrus Optimus Red (143&nbsp;dB C-peak,
+        ≈$500–800) for rough comparisons only.</li>
+    </ul>
+    <p>
+      Even well-suppressed gunfire sits near the 140&nbsp;dB instantaneous hearing-damage
+      threshold — <strong>wear hearing protection either way.</strong>
+    </p>
+  </div>
+
+  <div class="card">
+    <h2>Typical levels</h2>
+    <ul class="levels">
+      <li><span>Whisper, quiet library</span><span class="db">30 dB</span></li>
+      <li><span>Normal conversation</span><span class="db">60 dB</span></li>
+      <li><span>City traffic, vacuum cleaner</span><span class="db">75 dB</span></li>
+      <li><span>Hearing damage risk (8&nbsp;hr exposure)</span><span class="db">85 dB</span></li>
+      <li><span>Concert, power tools</span><span class="db">100 dB</span></li>
+      <li><span>Pain threshold</span><span class="db">120 dB</span></li>
+      <li><span>Suppressed gunshot (beyond mic range)</span><span class="db">130–145 dB</span></li>
+      <li><span>Unsuppressed rifle (beyond mic range)</span><span class="db">155–170 dB</span></li>
+    </ul>
+  </div>
+
+  <div class="card">
+    <div class="calib">
+      <span>Calibration</span>
+      <input type="range" id="calib" min="70" max="120" step="1" value="94">
+      <span class="val"><span id="calibVal">+94</span> dB</span>
+    </div>
+    <p class="calib-note">
+      Browser microphones aren't calibrated instruments, so readings are an approximation of
+      dB&nbsp;SPL. If you have a reference meter, adjust the offset until the numbers match.
+    </p>
+  </div>
+</div>
+
+<script>
+(() => {
+  const DB_MIN = 20, DB_MAX = 120;
+
+  const STATUS = [
+    { max: 55,       key: 'good',     label: 'Quiet',     desc: 'Comfortable — safe for any duration.' },
+    { max: 70,       key: 'warning',  label: 'Moderate',  desc: 'Everyday noise — conversation level.' },
+    { max: 85,       key: 'serious',  label: 'Loud',      desc: 'Tiring over long periods. Consider a quieter spot.' },
+    { max: Infinity, key: 'critical', label: 'Very loud', desc: 'Prolonged exposure can damage hearing.' },
+  ];
+
+  const ICONS = {
+    good:     '<svg width="16" height="16" viewBox="0 0 16 16"><circle cx="8" cy="8" r="7" fill="var(--good)"/><path d="M4.8 8.2l2.1 2.1 4.3-4.6" stroke="#fff" stroke-width="1.8" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg>',
+    warning:  '<svg width="16" height="16" viewBox="0 0 16 16"><circle cx="8" cy="8" r="7" fill="var(--warning)"/><path d="M8 4.4v4.4" stroke="#0b0b0b" stroke-width="1.8" stroke-linecap="round"/><circle cx="8" cy="11.4" r="1" fill="#0b0b0b"/></svg>',
+    serious:  '<svg width="16" height="16" viewBox="0 0 16 16"><path d="M8 1.6L15 14H1z" fill="var(--serious)"/><path d="M8 6v3.4" stroke="#0b0b0b" stroke-width="1.6" stroke-linecap="round"/><circle cx="8" cy="11.8" r="0.9" fill="#0b0b0b"/></svg>',
+    critical: '<svg width="16" height="16" viewBox="0 0 16 16"><path d="M8 1.6L15 14H1z" fill="var(--critical)"/><path d="M8 6v3.4" stroke="#fff" stroke-width="1.6" stroke-linecap="round"/><circle cx="8" cy="11.8" r="0.9" fill="#fff"/></svg>',
+  };
+
+  const $ = id => document.getElementById(id);
+  const els = {
+    value: $('dbValue'), chip: $('statusChip'), icon: $('statusIcon'),
+    label: $('statusLabel'), desc: $('statusDesc'),
+    min: $('statMin'), avg: $('statAvg'), max: $('statMax'),
+    peakHold: $('peakHold'), resetPeak: $('resetPeak'), clipBanner: $('clipBanner'),
+    btn: $('toggleBtn'), err: $('errorMsg'), micSelect: $('micSelect'),
+    arc: $('arc'), track: $('track'), ticks: $('ticks'),
+    canvas: $('history'), calib: $('calib'), calibVal: $('calibVal'),
+  };
+
+  // ---------- Gauge geometry (240° arc, from 210° to -30°) ----------
+  const CX = 190, CY = 175, R = 150;
+  const A_START = 210, A_END = -30, SWEEP = A_START - A_END; // 240°
+
+  const polar = (angleDeg, r = R) => {
+    const a = angleDeg * Math.PI / 180;
+    return [CX + r * Math.cos(a), CY - r * Math.sin(a)];
+  };
+  const arcPath = (fromDeg, toDeg) => {
+    const [x1, y1] = polar(fromDeg), [x2, y2] = polar(toDeg);
+    const large = (fromDeg - toDeg) > 180 ? 1 : 0;
+    return `M ${x1} ${y1} A ${R} ${R} 0 ${large} 1 ${x2} ${y2}`;
+  };
+  const dbToAngle = db => {
+    const t = Math.min(1, Math.max(0, (db - DB_MIN) / (DB_MAX - DB_MIN)));
+    return A_START - t * SWEEP;
+  };
+
+  els.track.setAttribute('d', arcPath(A_START, A_END));
+
+  // tick labels every 20 dB
+  for (let db = DB_MIN; db <= DB_MAX; db += 20) {
+    const [x, y] = polar(dbToAngle(db), R + 24);
+    const t = document.createElementNS('http://www.w3.org/2000/svg', 'text');
+    t.setAttribute('x', x); t.setAttribute('y', y);
+    t.setAttribute('text-anchor', 'middle');
+    t.setAttribute('dominant-baseline', 'middle');
+    t.textContent = db;
+    els.ticks.appendChild(t);
+  }
+
+  // ---------- State ----------
+  let audioCtx = null, stream = null, running = false;
+  let sampleTimer = null;
+  const SAMPLE_MS = 100;
+  let smoothed = null;
+  let sessionMin = Infinity, sessionMax = -Infinity;
+  let energySum = 0, energyCount = 0;
+  let calibOffset = 94;
+  // per-sample accumulator fed by the audio thread
+  let pend = { sum: 0, n: 0, peak: 0, clip: 0 };
+  let peakHoldAmp = 0;   // linear 0..1, so calibration changes re-map the display
+  let clipped = false;
+  const history = [];    // { t, db }
+  const HISTORY_SECS = 60;
+
+  els.calib.addEventListener('input', () => {
+    calibOffset = +els.calib.value;
+    els.calibVal.textContent = '+' + calibOffset;
+    if (!running) return;
+    renderPeak();
+  });
+
+  els.resetPeak.addEventListener('click', () => {
+    peakHoldAmp = 0;
+    clipped = false;
+    els.clipBanner.classList.remove('show');
+    renderPeak();
+  });
+
+  // ---------- Microphone picker ----------
+  let selectedDeviceId = '';
+
+  async function refreshDevices() {
+    if (!navigator.mediaDevices || !navigator.mediaDevices.enumerateDevices) return;
+    let devs;
+    try { devs = await navigator.mediaDevices.enumerateDevices(); }
+    catch (e) { return; }
+    const mics = devs.filter(d => d.kind === 'audioinput');
+    const sel = els.micSelect;
+    sel.innerHTML = '<option value="">System default</option>';
+    mics.forEach((m, i) => {
+      if (!m.deviceId) return;
+      const o = document.createElement('option');
+      o.value = m.deviceId;
+      o.textContent = m.label || `Microphone ${i + 1}`;
+      sel.appendChild(o);
+    });
+    // if the previously chosen device disappeared, fall back to default
+    sel.value = selectedDeviceId;
+    if (sel.value !== selectedDeviceId) {
+      selectedDeviceId = '';
+      sel.value = '';
+    }
+  }
+
+  els.micSelect.addEventListener('change', async () => {
+    selectedDeviceId = els.micSelect.value;
+    if (running) {           // switch live: restart capture on the new device
+      stop();
+      await start();
+    }
+  });
+
+  if (navigator.mediaDevices && navigator.mediaDevices.addEventListener) {
+    navigator.mediaDevices.addEventListener('devicechange', refreshDevices);
+  }
+  refreshDevices();
+
+  // ---------- Audio ----------
+  // The meter worklet runs on the audio thread and sees EVERY sample, so a
+  // sub-millisecond impulse between UI ticks still registers in `peak`.
+  const WORKLET_SRC = `
+    class MeterProcessor extends AudioWorkletProcessor {
+      constructor() { super(); this.sum = 0; this.n = 0; this.peak = 0; this.clip = 0; }
+      process(inputs) {
+        const ch = inputs[0] && inputs[0][0];
+        if (ch) {
+          for (let i = 0; i < ch.length; i++) {
+            const v = ch[i], a = v < 0 ? -v : v;
+            this.sum += v * v;
+            if (a > this.peak) this.peak = a;
+            if (a >= 0.99) this.clip++;
+          }
+          this.n += ch.length;
+          if (this.n >= 2048) {
+            this.port.postMessage({ sum: this.sum, n: this.n, peak: this.peak, clip: this.clip });
+            this.sum = 0; this.n = 0; this.peak = 0; this.clip = 0;
+          }
+        }
+        return true;
+      }
+    }
+    registerProcessor('meter', MeterProcessor);
+  `;
+
+  function accumulate(d) {
+    pend.sum += d.sum;
+    pend.n += d.n;
+    if (d.peak > pend.peak) pend.peak = d.peak;
+    pend.clip += d.clip;
+  }
+
+  async function attachMeter(src) {
+    // mute the monitoring path so the mic never plays back through speakers
+    const mute = audioCtx.createGain();
+    mute.gain.value = 0;
+    mute.connect(audioCtx.destination);
+    try {
+      const url = URL.createObjectURL(new Blob([WORKLET_SRC], { type: 'application/javascript' }));
+      await audioCtx.audioWorklet.addModule(url);
+      URL.revokeObjectURL(url);
+      const node = new AudioWorkletNode(audioCtx, 'meter');
+      node.port.onmessage = e => accumulate(e.data);
+      src.connect(node);
+      node.connect(mute);
+    } catch (e) {
+      // fallback for browsers without AudioWorklet
+      const node = audioCtx.createScriptProcessor(4096, 1, 1);
+      node.onaudioprocess = ev => {
+        const ch = ev.inputBuffer.getChannelData(0);
+        let sum = 0, peak = 0, clip = 0;
+        for (let i = 0; i < ch.length; i++) {
+          const v = ch[i], a = v < 0 ? -v : v;
+          sum += v * v;
+          if (a > peak) peak = a;
+          if (a >= 0.99) clip++;
+        }
+        accumulate({ sum, n: ch.length, peak, clip });
+      };
+      src.connect(node);
+      node.connect(mute);
+    }
+  }
+
+  async function start() {
+    els.err.style.display = 'none';
+    const audio = { echoCancellation: false, noiseSuppression: false, autoGainControl: false };
+    if (selectedDeviceId) audio.deviceId = { exact: selectedDeviceId };
+    try {
+      stream = await navigator.mediaDevices.getUserMedia({ audio });
+    } catch (e) {
+      els.err.textContent =
+        e.name === 'NotAllowedError'
+          ? 'Microphone access was denied. Allow it in your browser settings and try again.'
+        : (e.name === 'OverconstrainedError' || e.name === 'NotFoundError') && selectedDeviceId
+          ? 'That microphone is no longer available — plug it back in or pick another one.'
+          : 'Could not access the microphone: ' + e.message;
+      els.err.style.display = 'block';
+      return;
+    }
+    // permission granted: device labels are readable now
+    refreshDevices();
+    audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+    const src = audioCtx.createMediaStreamSource(stream);
+    await attachMeter(src);
+
+    smoothed = null;
+    sessionMin = Infinity; sessionMax = -Infinity;
+    energySum = 0; energyCount = 0;
+    pend = { sum: 0, n: 0, peak: 0, clip: 0 };
+    peakHoldAmp = 0;
+    clipped = false;
+    els.clipBanner.classList.remove('show');
+    history.length = 0;
+
+    running = true;
+    els.btn.textContent = 'Stop';
+    els.btn.classList.add('stop');
+    els.chip.hidden = false;
+    sampleTimer = setInterval(sample, SAMPLE_MS);
+    requestAnimationFrame(render);
+  }
+
+  function stop() {
+    running = false;
+    clearInterval(sampleTimer);
+    if (stream) stream.getTracks().forEach(t => t.stop());
+    if (audioCtx) audioCtx.close();
+    stream = audioCtx = null;
+    els.btn.textContent = 'Start measuring';
+    els.btn.classList.remove('stop');
+  }
+
+  els.btn.addEventListener('click', () => running ? stop() : start());
+
+  // ---------- Sampling (setInterval keeps running when the tab is hidden;
+  // the audio thread is never throttled, so nothing between ticks is lost) ----------
+  function sample() {
+    if (!running) return;
+    const d = pend;
+    pend = { sum: 0, n: 0, peak: 0, clip: 0 };
+    if (!d.n) return;
+
+    const rms = Math.sqrt(d.sum / d.n);
+    const raw = Math.min(DB_MAX, Math.max(DB_MIN, 20 * Math.log10(rms + 1e-12) + calibOffset));
+    // fast attack, slower release
+    if (smoothed === null) smoothed = raw;
+    else smoothed += (raw - smoothed) * (raw > smoothed ? 0.6 : 0.25);
+
+    sessionMin = Math.min(sessionMin, smoothed);
+    sessionMax = Math.max(sessionMax, smoothed);
+    energySum += Math.pow(10, smoothed / 10);
+    energyCount++;
+
+    if (d.peak > peakHoldAmp) peakHoldAmp = d.peak;
+    if (d.clip > 0) clipped = true;
+
+    const now = performance.now() / 1000;
+    history.push({ t: now, db: smoothed });
+    while (history.length && now - history[0].t > HISTORY_SECS) history.shift();
+  }
+
+  // ---------- Render loop (drawing only) ----------
+  function renderPeak() {
+    if (peakHoldAmp <= 0) {
+      els.peakHold.innerHTML = '–<small> dB</small>';
+    } else {
+      const db = Math.round(20 * Math.log10(peakHoldAmp) + calibOffset);
+      els.peakHold.innerHTML = (clipped ? '≥ ' : '') + db + '<small> dB</small>';
+      els.peakHold.style.color = clipped ? 'var(--critical)' : '';
+    }
+    els.clipBanner.classList.toggle('show', clipped);
+  }
+
+  function render() {
+    if (!running) return;
+    if (smoothed === null) { requestAnimationFrame(render); return; }
+
+    const avg = 10 * Math.log10(energySum / energyCount);
+    const now = performance.now() / 1000;
+    const status = STATUS.find(s => smoothed < s.max);
+    const color = `var(--${status.key})`;
+
+    els.value.textContent = Math.round(smoothed);
+    els.value.style.color = color;
+    els.icon.innerHTML = ICONS[status.key];
+    els.label.textContent = status.label;
+    els.desc.textContent = status.desc;
+
+    els.arc.setAttribute('d', arcPath(A_START, dbToAngle(smoothed)));
+    els.arc.setAttribute('stroke', color);
+
+    els.min.innerHTML = Math.round(sessionMin) + '<small> dB</small>';
+    els.avg.innerHTML = Math.round(avg) + '<small> dB</small>';
+    els.max.innerHTML = Math.round(sessionMax) + '<small> dB</small>';
+
+    renderPeak();
+    drawHistory(now);
+    requestAnimationFrame(render);
+  }
+
+  // ---------- History chart ----------
+  function cssVar(name) {
+    return getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+  }
+
+  function drawHistory(now) {
+    const c = els.canvas, dpr = window.devicePixelRatio || 1;
+    const w = c.clientWidth, h = c.clientHeight;
+    if (c.width !== w * dpr || c.height !== h * dpr) { c.width = w * dpr; c.height = h * dpr; }
+    const ctx = c.getContext('2d');
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx.clearRect(0, 0, w, h);
+
+    const padL = 30, padR = 6, padT = 6, padB = 16;
+    const plotW = w - padL - padR, plotH = h - padT - padB;
+    const yOf = db => padT + plotH * (1 - (db - DB_MIN) / (DB_MAX - DB_MIN));
+    const xOf = t => padL + plotW * (1 - (now - t) / HISTORY_SECS);
+
+    // gridlines at 40/60/80/100
+    ctx.strokeStyle = cssVar('--grid');
+    ctx.fillStyle = cssVar('--text-muted');
+    ctx.font = '10px system-ui, sans-serif';
+    ctx.textAlign = 'right';
+    ctx.textBaseline = 'middle';
+    ctx.lineWidth = 1;
+    for (const g of [40, 60, 80, 100]) {
+      const y = yOf(g);
+      ctx.beginPath(); ctx.moveTo(padL, y); ctx.lineTo(w - padR, y); ctx.stroke();
+      ctx.fillText(g, padL - 6, y);
+    }
+    // baseline
+    ctx.strokeStyle = cssVar('--baseline');
+    ctx.beginPath(); ctx.moveTo(padL, padT + plotH); ctx.lineTo(w - padR, padT + plotH); ctx.stroke();
+
+    // 85 dB risk threshold (dashed)
+    ctx.strokeStyle = cssVar('--critical');
+    ctx.globalAlpha = 0.5;
+    ctx.setLineDash([4, 4]);
+    ctx.beginPath(); ctx.moveTo(padL, yOf(85)); ctx.lineTo(w - padR, yOf(85)); ctx.stroke();
+    ctx.setLineDash([]);
+    ctx.globalAlpha = 1;
+
+    if (history.length > 1) {
+      ctx.strokeStyle = cssVar('--series-1');
+      ctx.lineWidth = 2;
+      ctx.lineJoin = 'round';
+      ctx.beginPath();
+      for (let i = 0; i < history.length; i++) {
+        const x = xOf(history[i].t), y = yOf(history[i].db);
+        i === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y);
+      }
+      ctx.stroke();
+    }
+
+    // x labels
+    ctx.fillStyle = cssVar('--text-muted');
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'top';
+    ctx.fillText('60s ago', padL + 20, padT + plotH + 4);
+    ctx.textAlign = 'right';
+    ctx.fillText('now', w - padR, padT + plotH + 4);
+  }
+
+  // draw the empty chart on load and keep it crisp if the window resizes while idle
+  drawHistory(performance.now() / 1000);
+  window.addEventListener('resize', () => {
+    if (!running) drawHistory(performance.now() / 1000);
+  });
+})();
+</script>
+</body>
+</html>
