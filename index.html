@@ -6,6 +6,12 @@
 <meta name="description" content="Free browser decibel meter — live sound levels from your microphone with true peak hold, mic-overload detection, a 60-second history chart, and hearing-safety guidance.">
 <title>Decibel Meter</title>
 <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🔊</text></svg>">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="apple-touch-icon" href="icon-180.png">
+<meta name="theme-color" content="#0d0d0d">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="dB Meter">
 <style>
   :root {
     color-scheme: light;
@@ -893,6 +899,13 @@
   window.addEventListener('resize', () => {
     if (!running) drawHistory(performance.now() / 1000);
   });
+
+  // installable app: register the service worker (no-op where unsupported)
+  if ('serviceWorker' in navigator) {
+    window.addEventListener('load', () => {
+      navigator.serviceWorker.register('./sw.js').catch(() => {});
+    });
+  }
 })();
 </script>
 </body>
