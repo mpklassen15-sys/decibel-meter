@@ -665,7 +665,14 @@
     }
     // show which mic the browser ACTUALLY gave us (it can substitute silently,
     // especially on iOS where input selection is limited)
-    els.micActive.textContent = track && track.label ? 'Using: ' + track.label : '';
+    let usingMsg = track && track.label ? 'Using: ' + track.label : '';
+    if (usingMsg && selectedDeviceId) {
+      const selOpt = els.micSelect.selectedOptions[0];
+      if (selOpt && selOpt.textContent && track.label && selOpt.textContent !== track.label) {
+        usingMsg += ' ⚠ not the mic you selected — your phone/OS controls mic routing';
+      }
+    }
+    els.micActive.textContent = usingMsg;
 
     const src = audioCtx.createMediaStreamSource(stream);
     await attachMeter(src);
