@@ -308,6 +308,28 @@
   .calib input[type=range] { flex: 1; accent-color: var(--series-1); }
   .calib .val { font-variant-numeric: tabular-nums; min-width: 52px; text-align: right; }
   .calib-note { font-size: 12px; color: var(--text-muted); margin-top: 10px; line-height: 1.5; }
+  .calib-auto { display: flex; gap: 8px; margin-top: 12px; }
+  .calib-auto input {
+    font: inherit;
+    font-size: 13px;
+    flex: 1;
+    padding: 9px 12px;
+    border-radius: 10px;
+    border: 1px solid var(--baseline);
+    background: var(--surface-1);
+    color: var(--text-primary);
+  }
+  .calib-auto button {
+    font: inherit;
+    font-size: 13px;
+    font-weight: 600;
+    padding: 9px 20px;
+    border-radius: 10px;
+    border: none;
+    background: var(--series-1);
+    color: #fff;
+    cursor: pointer;
+  }
 </style>
 </head>
 <body>
@@ -427,14 +449,32 @@
   </div>
 
   <div class="card">
+    <h2>Calibration</h2>
     <div class="calib">
-      <span>Calibration</span>
-      <input type="range" id="calib" min="70" max="120" step="1" value="94">
+      <span>Offset</span>
+      <input type="range" id="calib" min="40" max="130" step="1" value="94">
       <span class="val"><span id="calibVal">+94</span> dB</span>
     </div>
-    <p class="calib-note">
-      Browser microphones aren't calibrated instruments, so readings are an approximation of
-      dB&nbsp;SPL. If you have a reference meter, adjust the offset until the numbers match.
+    <div class="calib-auto">
+      <input type="number" id="refDb" inputmode="numeric" placeholder="Reference meter reads… dB" min="20" max="130" step="1">
+      <button id="applyRef" type="button">Match</button>
+    </div>
+    <p class="calib-note" id="calibNote">
+      While measuring, play a steady sound (a fan works), read the level off a reference
+      meter — the free NIOSH SLM phone app is a good one — type it above and press
+      <strong>Match</strong>. The offset is saved per microphone and restored automatically.
+    </p>
+  </div>
+
+  <div class="card" id="installCard" hidden>
+    <h2>Install as an app</h2>
+    <div id="installAndroid" hidden>
+      <button class="primary" id="installBtn" type="button">Install on home screen</button>
+    </div>
+    <p class="calib-note" id="installIos" hidden>
+      In Safari, tap the <strong>Share</strong> button (square with an up arrow), scroll down,
+      and tap <strong>Add to Home Screen</strong>. The app gets its own icon and opens
+      full-screen.
     </p>
   </div>
 </div>
@@ -467,6 +507,9 @@
     procSelect: $('procSelect'),
     arc: $('arc'), track: $('track'), ticks: $('ticks'),
     canvas: $('history'), calib: $('calib'), calibVal: $('calibVal'),
+    refDb: $('refDb'), applyRef: $('applyRef'), calibNote: $('calibNote'),
+    installCard: $('installCard'), installAndroid: $('installAndroid'),
+    installIos: $('installIos'), installBtn: $('installBtn'),
   };
 
   // ---------- Gauge geometry (240° arc, from 210° to -30°) ----------
@@ -516,11 +559,42 @@
   const history = [];    // { t, db }
   const HISTORY_SECS = 60;
 
-  els.calib.addEventListener('input', () => {
-    calibOffset = +els.calib.value;
+  // ---------- Calibration (saved per microphone) ----------
+  let calKey = 'dbmeter-cal:default';
+
+  function setCalib(v, save) {
+    calibOffset = Math.min(130, Math.max(40, Math.round(v)));
+    els.calib.value = calibOffset;
     els.calibVal.textContent = '+' + calibOffset;
-    if (!running) return;
-    renderPeak();
+    if (save !== false) {
+      try { localStorage.setItem(calKey, String(calibOffset)); } catch (e) {}
+    }
+    if (running) renderPeak();
+  }
+
+  function loadCalibFor(label) {
+    calKey = 'dbmeter-cal:' + (label || 'default');
+    let saved = NaN;
+    try { saved = parseInt(localStorage.getItem(calKey) || '', 10); } catch (e) {}
+    if (isFinite(saved)) setCalib(saved, false);
+  }
+
+  els.calib.addEventListener('input', () => setCalib(+els.calib.value));
+
+  els.applyRef.addEventListener('click', () => {
+    const ref = parseFloat(els.refDb.value);
+    if (!running || smoothed === null) {
+      els.calibNote.textContent = 'Start measuring first, then play a steady sound and press Match.';
+      return;
+    }
+    if (!isFinite(ref) || ref < 20 || ref > 130) {
+      els.calibNote.textContent = 'Enter the dB value your reference meter shows (20–130).';
+      return;
+    }
+    setCalib(calibOffset + (ref - smoothed));
+    els.refDb.value = '';
+    els.calibNote.innerHTML = 'Matched — offset is now +' + calibOffset +
+      ' dB and saved for this microphone.';
   });
 
   els.resetPeak.addEventListener('click', () => {
@@ -699,6 +773,8 @@
       }
     }
     els.micActive.textContent = usingMsg;
+    // restore this mic's saved calibration
+    loadCalibFor(track && track.label);
 
     const src = audioCtx.createMediaStreamSource(stream);
     await attachMeter(src);
@@ -905,6 +981,30 @@
     window.addEventListener('load', () => {
       navigator.serviceWorker.register('./sw.js').catch(() => {});
     });
+  }
+
+  // ---------- Install helper ----------
+  const standalone = window.matchMedia('(display-mode: standalone)').matches
+    || window.navigator.standalone === true;
+  if (!standalone) {
+    let deferredPrompt = null;
+    window.addEventListener('beforeinstallprompt', e => {
+      e.preventDefault();
+      deferredPrompt = e;
+      els.installCard.hidden = false;
+      els.installAndroid.hidden = false;
+      els.installIos.hidden = true;
+    });
+    els.installBtn.addEventListener('click', () => {
+      if (!deferredPrompt) return;
+      deferredPrompt.prompt();
+      deferredPrompt = null;
+      els.installCard.hidden = true;
+    });
+    if (/iphone|ipad|ipod/i.test(navigator.userAgent)) {
+      els.installCard.hidden = false;
+      els.installIos.hidden = false;
+    }
   }
 })();
 </script>
