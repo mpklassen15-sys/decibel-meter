@@ -219,6 +219,36 @@
   /* ---------- History chart ---------- */
   #history { width: 100%; height: 140px; display: block; }
 
+  /* ---------- Video + sound sync ---------- */
+  #preview, #playback {
+    width: 100%;
+    max-height: 340px;
+    border-radius: 12px;
+    display: block;
+    background: #000;
+    margin-bottom: 12px;
+  }
+  #vidTrack { width: 100%; height: 96px; display: block; cursor: pointer; touch-action: manipulation; }
+  .vid-controls { display: flex; align-items: center; gap: 8px; margin-top: 10px; flex-wrap: wrap; }
+  .vid-controls button, .vid-controls a {
+    font: inherit;
+    font-size: 13px;
+    font-weight: 600;
+    padding: 8px 16px;
+    border-radius: 999px;
+    border: 1px solid var(--baseline);
+    background: transparent;
+    color: var(--text-primary);
+    cursor: pointer;
+    text-decoration: none;
+  }
+  .vid-controls button.speed.active {
+    background: var(--series-1);
+    border-color: var(--series-1);
+    color: #fff;
+  }
+  .vid-controls a { margin-left: auto; }
+
   /* ---------- Controls ---------- */
   .mic-row {
     display: flex;
@@ -401,6 +431,41 @@
     <div class="error" id="errorMsg"></div>
   </div>
 
+  <div class="card">
+    <h2>Video + sound sync</h2>
+    <div id="vidIdle">
+      <p class="calib-note" style="margin-top:0">
+        Record video with the meter running, then scrub the sound trace to see exactly
+        where each peak lands in the footage. Browsers record at standard frame rate,
+        so "slow-mo" here is slowed playback (½× / ¼×), not the phone's 240 fps camera.
+      </p>
+      <div class="controls" style="margin-top:14px">
+        <button class="primary" id="recBtn">Record video</button>
+      </div>
+    </div>
+    <div id="vidLive" hidden>
+      <video id="preview" muted autoplay playsinline></video>
+      <div class="controls">
+        <button class="primary stop" id="recStop">Stop recording</button>
+      </div>
+    </div>
+    <div id="vidPlay" hidden>
+      <video id="playback" playsinline controls></video>
+      <canvas id="vidTrack" aria-label="Sound level trace for the recording"></canvas>
+      <p class="calib-note" style="margin-top:6px">
+        Red dots mark the loudest impulses — tap one (or anywhere on the trace) to jump
+        the video there.
+      </p>
+      <div class="vid-controls">
+        <button class="speed active" data-speed="1">1×</button>
+        <button class="speed" data-speed="0.5">½×</button>
+        <button class="speed" data-speed="0.25">¼×</button>
+        <a id="vidSave" download="decibel-video.webm">Save video</a>
+        <button id="recAgain">Record again</button>
+      </div>
+    </div>
+  </div>
+
   <div class="card chart-card">
     <h2>Last 60 seconds</h2>
     <canvas id="history" aria-label="Sound level over the last 60 seconds"></canvas>
@@ -510,6 +575,10 @@
     refDb: $('refDb'), applyRef: $('applyRef'), calibNote: $('calibNote'),
     installCard: $('installCard'), installAndroid: $('installAndroid'),
     installIos: $('installIos'), installBtn: $('installBtn'),
+    vidIdle: $('vidIdle'), vidLive: $('vidLive'), vidPlay: $('vidPlay'),
+    recBtn: $('recBtn'), recStop: $('recStop'), recAgain: $('recAgain'),
+    preview: $('preview'), playback: $('playback'), vidTrack: $('vidTrack'),
+    vidSave: $('vidSave'),
   };
 
   // ---------- Gauge geometry (240° arc, from 210° to -30°) ----------
@@ -718,7 +787,7 @@
 
   let watchdog = null;
 
-  async function start() {
+  async function start(withVideo) {
     els.err.style.display = 'none';
     // Create (and kick) the AudioContext synchronously inside the tap gesture —
     // iOS Safari refuses to start audio from an async continuation, which left
@@ -736,7 +805,12 @@
       if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
         throw { name: 'NotSupported', message: 'this browser does not support microphone capture. Note: mic access requires HTTPS.' };
       }
-      stream = await navigator.mediaDevices.getUserMedia({ audio });
+      if (withVideo && !window.MediaRecorder) {
+        throw { name: 'NotSupported', message: 'this browser does not support video recording.' };
+      }
+      const gum = { audio };
+      if (withVideo) gum.video = { facingMode: 'environment' };
+      stream = await navigator.mediaDevices.getUserMedia(gum);
     } catch (e) {
       audioCtx.close(); audioCtx = null;
       els.err.textContent =
@@ -819,12 +893,15 @@
         els.err.style.display = 'block';
       }
     }, 2500);
+
+    if (withVideo) beginRecording();
   }
 
   function stop() {
     running = false;
     clearInterval(sampleTimer);
     clearTimeout(watchdog);
+    if (recording) finishRecording();   // finalize the clip before tracks die
     if (stream) stream.getTracks().forEach(t => t.stop());
     if (audioCtx) audioCtx.close();
     stream = audioCtx = null;
@@ -866,6 +943,8 @@
     const now = performance.now() / 1000;
     history.push({ t: now, db: smoothed });
     while (history.length && now - history[0].t > HISTORY_SECS) history.shift();
+
+    if (recording) recTrace.push({ t: now - recStartT, db: smoothed, pk: d.peak });
   }
 
   // ---------- Render loop (drawing only) ----------
@@ -969,6 +1048,175 @@
     ctx.textAlign = 'right';
     ctx.fillText('now', w - padR, padT + plotH + 4);
   }
+
+  // ---------- Video + sound sync ----------
+  let recorder = null, recChunks = [], recMime = '', recUrl = null;
+  let recording = false, recStartT = 0;
+  let recTrace = [];        // { t, db, pk } — one point per sample tick
+  let markers = [], traceDur = 0;
+
+  function beginRecording() {
+    const mime = ['video/mp4', 'video/webm;codecs=vp8,opus', 'video/webm']
+      .find(m => MediaRecorder.isTypeSupported && MediaRecorder.isTypeSupported(m)) || '';
+    try {
+      recorder = new MediaRecorder(stream, mime ? { mimeType: mime } : undefined);
+    } catch (e) {
+      els.err.textContent = 'Video recording failed to start: ' + e.message;
+      els.err.style.display = 'block';
+      return;
+    }
+    recMime = recorder.mimeType || mime || 'video/webm';
+    recChunks = [];
+    recTrace = [];
+    recorder.ondataavailable = e => { if (e.data && e.data.size) recChunks.push(e.data); };
+    recorder.onstop = buildPlayback;
+    recorder.start(250);
+    recStartT = performance.now() / 1000;
+    recording = true;
+    els.vidIdle.hidden = true;
+    els.vidPlay.hidden = true;
+    els.vidLive.hidden = false;
+    els.preview.srcObject = stream;
+    els.preview.play().catch(() => {});
+  }
+
+  function finishRecording() {
+    recording = false;
+    els.preview.srcObject = null;
+    els.vidLive.hidden = true;
+    try { if (recorder && recorder.state !== 'inactive') recorder.stop(); } catch (e) {}
+  }
+
+  function buildPlayback() {
+    if (!recChunks.length) { els.vidIdle.hidden = false; return; }
+    if (recUrl) URL.revokeObjectURL(recUrl);
+    recUrl = URL.createObjectURL(new Blob(recChunks, { type: recMime }));
+    els.playback.src = recUrl;
+    els.playback.playbackRate = 1;
+    document.querySelectorAll('.vid-controls .speed').forEach(b =>
+      b.classList.toggle('active', b.dataset.speed === '1'));
+    els.vidSave.href = recUrl;
+    els.vidSave.download = 'decibel-video.' + (recMime.indexOf('mp4') >= 0 ? 'mp4' : 'webm');
+    traceDur = recTrace.length ? recTrace[recTrace.length - 1].t : 0;
+    computeMarkers();
+    els.vidPlay.hidden = false;
+    drawVidTrack();
+  }
+
+  function computeMarkers() {
+    markers = [];
+    if (!recTrace.length) return;
+    const pts = recTrace.map(p => ({ t: p.t, db: 20 * Math.log10(p.pk + 1e-12) + calibOffset }));
+    const mean = pts.reduce((s, p) => s + p.db, 0) / pts.length;
+    const floor = Math.max(mean + 8, 55);
+    const byLevel = pts.slice().sort((a, b) => b.db - a.db);
+    for (const p of byLevel) {
+      if (p.db < floor || markers.length >= 10) break;
+      if (markers.every(m => Math.abs(m.t - p.t) > 0.3)) markers.push(p);
+    }
+    markers.sort((a, b) => a.t - b.t);
+  }
+
+  function vidDuration() {
+    const d = els.playback.duration;
+    return (isFinite(d) && d > 0) ? d : (traceDur || 1);
+  }
+
+  function drawVidTrack() {
+    const c = els.vidTrack, dpr = window.devicePixelRatio || 1;
+    const w = c.clientWidth, h = c.clientHeight;
+    if (!w) return;
+    if (c.width !== w * dpr || c.height !== h * dpr) { c.width = w * dpr; c.height = h * dpr; }
+    const ctx = c.getContext('2d');
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx.clearRect(0, 0, w, h);
+
+    const padL = 30, padR = 6, padT = 8, padB = 6;
+    const plotW = w - padL - padR, plotH = h - padT - padB;
+    const yOf = db => padT + plotH * (1 - Math.min(1, Math.max(0, (db - DB_MIN) / (DB_MAX - DB_MIN))));
+    const xOf = t => padL + plotW * (traceDur ? t / traceDur : 0);
+
+    ctx.strokeStyle = cssVar('--grid');
+    ctx.fillStyle = cssVar('--text-muted');
+    ctx.font = '10px system-ui, sans-serif';
+    ctx.textAlign = 'right';
+    ctx.textBaseline = 'middle';
+    ctx.lineWidth = 1;
+    for (const g of [60, 100]) {
+      const y = yOf(g);
+      ctx.beginPath(); ctx.moveTo(padL, y); ctx.lineTo(w - padR, y); ctx.stroke();
+      ctx.fillText(g, padL - 6, y);
+    }
+
+    if (recTrace.length > 1) {
+      ctx.strokeStyle = cssVar('--series-1');
+      ctx.lineWidth = 2;
+      ctx.lineJoin = 'round';
+      ctx.beginPath();
+      recTrace.forEach((p, i) => {
+        const x = xOf(p.t), y = yOf(p.db);
+        i === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y);
+      });
+      ctx.stroke();
+    }
+
+    // peak markers
+    ctx.fillStyle = cssVar('--critical');
+    for (const m of markers) {
+      ctx.beginPath();
+      ctx.arc(xOf(m.t), yOf(m.db), 5, 0, Math.PI * 2);
+      ctx.fill();
+    }
+
+    // playback cursor
+    const frac = Math.min(1, els.playback.currentTime / vidDuration());
+    const cx2 = padL + plotW * frac;
+    ctx.strokeStyle = cssVar('--text-primary');
+    ctx.lineWidth = 1.5;
+    ctx.beginPath(); ctx.moveTo(cx2, padT); ctx.lineTo(cx2, padT + plotH); ctx.stroke();
+  }
+
+  els.recBtn.addEventListener('click', async () => {
+    if (running) stop();
+    await start(true);
+  });
+  els.recStop.addEventListener('click', () => stop());
+  els.recAgain.addEventListener('click', () => {
+    els.playback.pause();
+    els.vidPlay.hidden = true;
+    els.vidIdle.hidden = false;
+  });
+
+  els.vidTrack.addEventListener('click', e => {
+    const r = els.vidTrack.getBoundingClientRect();
+    const padL = 30, padR = 6;
+    const frac = Math.min(1, Math.max(0, (e.clientX - r.left - padL) / (r.width - padL - padR)));
+    // snap to a nearby marker if the tap is close to one
+    const t = frac * traceDur;
+    let target = t;
+    for (const m of markers) {
+      if (Math.abs(m.t - t) < traceDur * 0.03) { target = m.t; break; }
+    }
+    els.playback.currentTime = (target / (traceDur || 1)) * vidDuration();
+    drawVidTrack();
+  });
+
+  document.querySelectorAll('.vid-controls .speed').forEach(b => {
+    b.addEventListener('click', () => {
+      els.playback.playbackRate = parseFloat(b.dataset.speed);
+      document.querySelectorAll('.vid-controls .speed').forEach(x =>
+        x.classList.toggle('active', x === b));
+    });
+  });
+
+  let vidRaf = null;
+  function vidLoop() {
+    drawVidTrack();
+    if (!els.playback.paused && !els.playback.ended) vidRaf = requestAnimationFrame(vidLoop);
+  }
+  els.playback.addEventListener('play', () => { cancelAnimationFrame(vidRaf); vidLoop(); });
+  ['pause', 'ended', 'seeked', 'timeupdate', 'loadedmetadata'].forEach(ev =>
+    els.playback.addEventListener(ev, drawVidTrack));
 
   // draw the empty chart on load and keep it crisp if the window resizes while idle
   drawHistory(performance.now() / 1000);
