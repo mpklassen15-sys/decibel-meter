@@ -292,6 +292,8 @@
   }
   button.primary:hover { filter: brightness(1.08); }
   button.primary.stop { background: transparent; color: var(--text-primary); border: 1px solid var(--baseline); }
+  button.primary.import { background: transparent; color: var(--text-primary); border: 1px solid var(--baseline); }
+  button.primary:disabled { opacity: 0.6; cursor: default; }
 
   .error {
     margin-top: 14px;
@@ -436,12 +438,16 @@
     <div id="vidIdle">
       <p class="calib-note" style="margin-top:0">
         Record video with the meter running, then scrub the sound trace to see exactly
-        where each peak lands in the footage. Browsers record at standard frame rate,
-        so "slow-mo" here is slowed playback (½× / ¼×), not the phone's 240 fps camera.
+        where each peak lands in the footage. In-app recording is standard frame rate —
+        for true 240&nbsp;fps, shoot slow-mo with your phone's Camera app and load the
+        file with <strong>Analyze a video</strong>: you get the same trace and peak
+        markers over the real high-speed footage.
       </p>
       <div class="controls" style="margin-top:14px">
         <button class="primary" id="recBtn">Record video</button>
+        <button class="primary import" id="importBtn">Analyze a video…</button>
       </div>
+      <input type="file" id="importFile" accept="video/*" hidden>
     </div>
     <div id="vidLive" hidden>
       <video id="preview" muted autoplay playsinline></video>
@@ -578,7 +584,7 @@
     vidIdle: $('vidIdle'), vidLive: $('vidLive'), vidPlay: $('vidPlay'),
     recBtn: $('recBtn'), recStop: $('recStop'), recAgain: $('recAgain'),
     preview: $('preview'), playback: $('playback'), vidTrack: $('vidTrack'),
-    vidSave: $('vidSave'),
+    vidSave: $('vidSave'), importBtn: $('importBtn'), importFile: $('importFile'),
   };
 
   // ---------- Gauge geometry (240° arc, from 210° to -30°) ----------
@@ -1175,6 +1181,70 @@
     ctx.lineWidth = 1.5;
     ctx.beginPath(); ctx.moveTo(cx2, padT); ctx.lineTo(cx2, padT + plotH); ctx.stroke();
   }
+
+  // ---------- Import & analyze an existing video ----------
+  async function analyzeVideoFile(file) {
+    els.err.style.display = 'none';
+    els.importBtn.disabled = true;
+    els.importBtn.textContent = 'Analyzing…';
+    let audioBuf = null;
+    try {
+      const buf = await file.arrayBuffer();
+      const ac = new (window.AudioContext || window.webkitAudioContext)();
+      audioBuf = await ac.decodeAudioData(buf);
+      ac.close();
+    } catch (e) {
+      els.err.textContent = 'Could not read an audio track from that video. ' +
+        'If it\'s a slow-mo export, make sure it was saved with sound.';
+      els.err.style.display = 'block';
+    }
+    els.importBtn.disabled = false;
+    els.importBtn.textContent = 'Analyze a video…';
+    if (!audioBuf) return;
+
+    // build the dB trace from the decoded audio — same shape the live path produces
+    const ch = audioBuf.getChannelData(0);
+    const sr = audioBuf.sampleRate;
+    const dur = audioBuf.duration;
+    const hop = Math.max(0.02, dur / 3000);      // cap at ~3000 points for drawing
+    const win = Math.max(1, Math.round(hop * sr));
+    recTrace = [];
+    let smooth = null;
+    for (let i = 0; i + win <= ch.length; i += win) {
+      let sum = 0, peak = 0;
+      for (let j = i; j < i + win; j++) {
+        const v = ch[j], a = v < 0 ? -v : v;
+        sum += v * v;
+        if (a > peak) peak = a;
+      }
+      const rms = Math.sqrt(sum / win);
+      const db = Math.min(DB_MAX, Math.max(DB_MIN, 20 * Math.log10(rms + 1e-12) + calibOffset));
+      smooth = smooth === null ? db : smooth + (db - smooth) * (db > smooth ? 0.6 : 0.25);
+      recTrace.push({ t: i / sr, db: smooth, pk: peak });
+    }
+    traceDur = dur;
+
+    if (recUrl) URL.revokeObjectURL(recUrl);
+    recUrl = URL.createObjectURL(file);
+    els.playback.src = recUrl;
+    els.playback.playbackRate = 1;
+    document.querySelectorAll('.vid-controls .speed').forEach(b =>
+      b.classList.toggle('active', b.dataset.speed === '1'));
+    els.vidSave.href = recUrl;
+    els.vidSave.download = file.name || 'video';
+    computeMarkers();
+    els.vidIdle.hidden = true;
+    els.vidLive.hidden = true;
+    els.vidPlay.hidden = false;
+    drawVidTrack();
+  }
+
+  els.importBtn.addEventListener('click', () => els.importFile.click());
+  els.importFile.addEventListener('change', () => {
+    const f = els.importFile.files && els.importFile.files[0];
+    els.importFile.value = '';
+    if (f) analyzeVideoFile(f);
+  });
 
   els.recBtn.addEventListener('click', async () => {
     if (running) stop();
